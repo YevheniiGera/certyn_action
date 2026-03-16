@@ -1,0 +1,13 @@
+{
+  "name": "certyn-action",
+  "version": "1.0.0",
+  "description": "Official GitHub Action for triggering and gating Certyn CI runs",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

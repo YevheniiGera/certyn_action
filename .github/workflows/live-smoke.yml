@@ -1,0 +1,142 @@
+name: Live Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target Certyn environment profile
+        type: choice
+        required: true
+        default: dev
+        options:
+          - dev
+          - staging
+          - prod
+          - custom
+      api_url:
+        description: Optional API URL override (for example https://api.dev.certyn.io)
+        required: false
+        type: string
+      project_slug:
+        description: Optional project slug override
+        required: false
+        type: string
+      environment_key:
+        description: Optional Certyn environment key (staging, prod, etc)
+        required: false
+        type: string
+      process_slug:
+        description: Process slug to run
+        required: true
+        default: smoke-suite
+        type: string
+      wait_for_completion:
+        description: Wait for terminal state
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve target config
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          INPUT_API_URL: ${{ inputs.api_url }}
+          INPUT_PROJECT_SLUG: ${{ inputs.project_slug }}
+          API_KEY_DEV: ${{ secrets.CERTYN_API_KEY_DEV }}
+          PROJECT_SLUG_DEV: ${{ secrets.CERTYN_PROJECT_SLUG_DEV }}
+          API_URL_DEV: ${{ secrets.CERTYN_API_URL_DEV }}
+          API_KEY_STAGING: ${{ secrets.CERTYN_API_KEY_STAGING }}
+          PROJECT_SLUG_STAGING: ${{ secrets.CERTYN_PROJECT_SLUG_STAGING }}
+          API_URL_STAGING: ${{ secrets.CERTYN_API_URL_STAGING }}
+          API_KEY_PROD: ${{ secrets.CERTYN_API_KEY_PROD }}
+          PROJECT_SLUG_PROD: ${{ secrets.CERTYN_PROJECT_SLUG_PROD }}
+          API_URL_PROD: ${{ secrets.CERTYN_API_URL_PROD }}
+          API_KEY_CUSTOM: ${{ secrets.CERTYN_API_KEY_CUSTOM }}
+        run: |
+          set -euo pipefail
+
+          case "$TARGET" in
+            dev)
+              api_key="$API_KEY_DEV"
+              project_slug="$PROJECT_SLUG_DEV"
+              api_url="${API_URL_DEV:-https://api.dev.certyn.io}"
+              ;;
+            staging)
+              api_key="$API_KEY_STAGING"
+              project_slug="$PROJECT_SLUG_STAGING"
+              api_url="${API_URL_STAGING:-https://api.staging.certyn.io}"
+              ;;
+            prod)
+              api_key="$API_KEY_PROD"
+              project_slug="$PROJECT_SLUG_PROD"
+              api_url="${API_URL_PROD:-https://api.certyn.io}"
+              ;;
+            custom)
+              api_key="$API_KEY_CUSTOM"
+              project_slug=""
+              api_url=""
+              ;;
+            *)
+              echo "Unsupported target: $TARGET"
+              exit 1
+              ;;
+          esac
+
+          if [ -n "$INPUT_PROJECT_SLUG" ]; then
+            project_slug="$INPUT_PROJECT_SLUG"
+          fi
+
+          if [ -n "$INPUT_API_URL" ]; then
+            api_url="$INPUT_API_URL"
+          fi
+
+          if [ -z "$api_key" ]; then
+            echo "Missing API key secret for target '$TARGET'."
+            exit 1
+          fi
+
+          if [ -z "$project_slug" ]; then
+            echo "Missing project slug. Provide input.project_slug or set target secret."
+            exit 1
+          fi
+
+          if [ -z "$api_url" ]; then
+            echo "Missing api_url. Provide input.api_url or set target secret."
+            exit 1
+          fi
+
+          echo "::add-mask::$api_key"
+          {
+            echo "CERTYN_API_KEY=$api_key"
+            echo "CERTYN_PROJECT_SLUG=$project_slug"
+            echo "CERTYN_API_URL=$api_url"
+          } >> "$GITHUB_ENV"
+
+      - name: Trigger Certyn run
+        id: certyn
+        uses: ./
+        with:
+          api_key: ${{ env.CERTYN_API_KEY }}
+          project_slug: ${{ env.CERTYN_PROJECT_SLUG }}
+          environment_key: ${{ inputs.environment_key }}
+          process_slug: ${{ inputs.process_slug }}
+          api_url: ${{ env.CERTYN_API_URL }}
+          wait_for_completion: ${{ inputs.wait_for_completion }}
+
+      - name: Print run links
+        if: always()
+        run: |
+          echo "run_id=${{ steps.certyn.outputs.run_id }}"
+          echo "status_url=${{ steps.certyn.outputs.status_url }}"
+          echo "app_url=${{ steps.certyn.outputs.app_url }}"

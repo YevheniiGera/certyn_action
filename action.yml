@@ -1,0 +1,126 @@
+name: Certyn CI Runs
+description: Trigger Certyn CI runs, poll status, and fail the workflow based on verification results.
+author: Certyn
+
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  api_key:
+    description: Certyn API key (X-API-Key)
+    required: true
+  project_slug:
+    description: Certyn project slug
+    required: true
+  environment_key:
+    description: Optional environment key (for example staging)
+    required: false
+  process_slug:
+    description: Process slug to run (recommended)
+    required: false
+  tags:
+    description: Comma-separated, newline-separated, or JSON array of tags. Use only when process_slug is not provided.
+    required: false
+  api_url:
+    description: Certyn API base URL
+    required: false
+    default: https://api.certyn.io
+  repository:
+    description: Optional repository metadata sent to Certyn (defaults to GITHUB_REPOSITORY)
+    required: false
+  ref:
+    description: Optional git ref metadata sent to Certyn (defaults to GITHUB_REF_NAME)
+    required: false
+  commit_sha:
+    description: Optional commit SHA metadata sent to Certyn (defaults to GITHUB_SHA)
+    required: false
+  event:
+    description: Optional event metadata sent to Certyn (defaults to GITHUB_EVENT_NAME)
+    required: false
+  external_url:
+    description: Optional external URL metadata sent to Certyn (defaults to current Actions run URL)
+    required: false
+  idempotency_key:
+    description: Optional idempotency key. Defaults to GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT-GITHUB_JOB.
+    required: false
+  wait_for_completion:
+    description: Wait until run reaches terminal state
+    required: false
+    default: "true"
+  timeout_seconds:
+    description: Max time to wait for terminal state
+    required: false
+    default: "1800"
+  initial_poll_interval_seconds:
+    description: Minimum poll interval
+    required: false
+    default: "10"
+  max_poll_interval_seconds:
+    description: Maximum poll interval
+    required: false
+    default: "30"
+  fail_on_failed:
+    description: Fail action if terminal failed count is greater than 0
+    required: false
+    default: "true"
+  fail_on_blocked:
+    description: Fail action if terminal blocked count is greater than 0
+    required: false
+    default: "true"
+  fail_on_cancelled:
+    description: Fail action if run state is cancelled
+    required: false
+    default: "true"
+  cancel_on_timeout:
+    description: Attempt to cancel Certyn run when timeout is reached
+    required: false
+    default: "true"
+  cancel_on_job_cancel:
+    description: Attempt to cancel Certyn run when SIGINT/SIGTERM is received
+    required: false
+    default: "true"
+  cancel_reason:
+    description: Cancel reason used for timeout or job cancellation
+    required: false
+    default: Cancelled by certyn/action
+  request_timeout_seconds:
+    description: Per-request HTTP timeout
+    required: false
+    default: "30"
+  http_max_attempts:
+    description: Max HTTP attempts for transient failures (429/5xx/network)
+    required: false
+    default: "4"
+
+outputs:
+  run_id:
+    description: Certyn run ID
+  status_url:
+    description: Absolute status URL
+  app_url:
+    description: Certyn app URL for run artifacts
+  test_case_count:
+    description: Test case count from create response
+  idempotency_replayed:
+    description: true if create call replayed an existing run
+  state:
+    description: Final run state (completed or cancelled)
+  conclusion:
+    description: Final conclusion (success, failure, action_required, neutral, cancelled)
+  total:
+    description: Total test tickets in run
+  passed:
+    description: Passed count
+  failed:
+    description: Failed count
+  blocked:
+    description: Blocked/action-required count
+  pending:
+    description: Pending count
+  skipped:
+    description: Skipped count
+
+runs:
+  using: node20
+  main: dist/index.js
