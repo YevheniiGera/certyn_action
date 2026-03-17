@@ -271,6 +271,84 @@ function parseCounter(value) {
   return Math.floor(parsed);
 }
 
+function formatElapsedSeconds(totalSeconds) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+
+  if (minutes <= 0) {
+    return `${remainingSeconds}s`;
+  }
+
+  if (remainingSeconds === 0) {
+    return `${minutes}m`;
+  }
+
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+function formatRunScope(config) {
+  const parts = [];
+
+  if (config.environmentKey) {
+    parts.push(`environment: ${config.environmentKey}`);
+  }
+
+  if (config.processSlug) {
+    parts.push(`process: ${config.processSlug}`);
+  } else if (config.tags.length > 0) {
+    parts.push(`tags: ${config.tags.join(', ')}`);
+  }
+
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
+function formatProgressMessage(status, elapsedSeconds) {
+  const failed = parseCounter(status.failed);
+  const blocked = parseCounter(status.blocked);
+  const pending = parseCounter(status.pending);
+  const passed = parseCounter(status.passed);
+  const total = parseCounter(status.total);
+  const elapsed = formatElapsedSeconds(elapsedSeconds);
+
+  if ((status.state || '') === 'completed') {
+    const totalLabel = total > 0 ? `${passed}/${total}` : `${passed}`;
+    return `Run completed after ${elapsed}. Passed ${totalLabel}, failed ${failed}, blocked ${blocked}.`;
+  }
+
+  const fragments = [];
+
+  if (pending > 0) {
+    fragments.push(`${pending} pending`);
+  }
+
+  if (failed > 0) {
+    fragments.push(`${failed} failed`);
+  }
+
+  if (blocked > 0) {
+    fragments.push(`${blocked} blocked`);
+  }
+
+  if (pending === 0 && failed === 0 && blocked === 0) {
+    fragments.push('waiting for status updates');
+  }
+
+  return `Still running after ${elapsed}. ${fragments.join(', ')}.`;
+}
+
+function getProgressSignature(status) {
+  return [
+    status.state || '',
+    parseCounter(status.total),
+    parseCounter(status.passed),
+    parseCounter(status.failed),
+    parseCounter(status.blocked),
+    parseCounter(status.pending),
+    parseCounter(status.skipped)
+  ].join('|');
+}
+
 function evaluateVerdict(state, status, config) {
   if (state === 'cancelled' && config.failOnCancelled) {
     return { ok: false, reason: 'Certyn run was cancelled.' };
@@ -474,7 +552,7 @@ async function run() {
   const headers = buildHeaders(config);
   const createPayload = buildCreatePayload(config);
 
-  logInfo(`Creating run for project '${config.projectSlug}' on ${config.apiUrl}.`);
+  logInfo(`Creating run for project '${config.projectSlug}'${formatRunScope(config)} on ${config.apiUrl}.`);
   const createResponse = await requestJson(`${config.apiUrl}/api/ci/runs`, {
     method: 'POST',
     headers,
@@ -506,6 +584,12 @@ async function run() {
   setOutput('test_case_count', parseCounter(createResponse.json && createResponse.json.testCaseCount));
   setOutput('idempotency_replayed', replayed ? 'true' : 'false');
 
+  logInfo(`Run created: ${runId}${replayed ? ' (idempotent replay)' : ''}.`);
+  logInfo(`Status URL: ${statusUrl}`);
+  if (createResponse.json && createResponse.json.appUrl) {
+    logInfo(`App URL: ${createResponse.json.appUrl}`);
+  }
+
   const signalContext = {
     config,
     headers,
@@ -530,6 +614,7 @@ async function run() {
   }
 
   const deadline = Date.now() + (config.timeoutSeconds * 1000);
+  const pollStartedAt = Date.now();
   let lastStatus = {
     state: '',
     conclusion: '',
@@ -543,6 +628,10 @@ async function run() {
   };
 
   let pollNumber = 0;
+  let lastProgressSignature = '';
+  let lastProgressLogAt = 0;
+
+  logInfo('Waiting for completion...');
 
   while (Date.now() < deadline) {
     pollNumber += 1;
@@ -583,10 +672,18 @@ async function run() {
       appUrl: status.appUrl || lastStatus.appUrl || ''
     };
 
-    logInfo(
-      `poll=${pollNumber} state=${lastStatus.state || 'unknown'} ` +
-      `failed=${lastStatus.failed} blocked=${lastStatus.blocked} pending=${lastStatus.pending}`
-    );
+    const now = Date.now();
+    const progressSignature = getProgressSignature(lastStatus);
+    const shouldLogProgress =
+      pollNumber === 1 ||
+      progressSignature !== lastProgressSignature ||
+      (now - lastProgressLogAt) >= 30000;
+
+    if (shouldLogProgress) {
+      logInfo(formatProgressMessage(lastStatus, (now - pollStartedAt) / 1000));
+      lastProgressSignature = progressSignature;
+      lastProgressLogAt = now;
+    }
 
     if (TERMINAL_STATES.has(state)) {
       unregisterSignalHandlers();

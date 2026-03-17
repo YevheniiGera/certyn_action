@@ -62,6 +62,29 @@ async function withActionEnv(values, fn) {
   }
 }
 
+async function captureConsole(fn) {
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const lines = [];
+
+  console.log = (...args) => {
+    lines.push(args.join(' '));
+  };
+
+  console.warn = (...args) => {
+    lines.push(args.join(' '));
+  };
+
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+
+  return lines;
+}
+
 test('parseTagsInput supports csv/newline/json', () => {
   assert.deepEqual(__private.parseTagsInput('smoke, regression'), ['smoke', 'regression']);
   assert.deepEqual(__private.parseTagsInput('smoke\ncritical\nsmoke'), ['smoke', 'critical']);
@@ -129,23 +152,25 @@ test('run succeeds and emits outputs for completed successful run', async () => 
     fs.writeFileSync(outputFile, '', 'utf8');
     fs.writeFileSync(summaryFile, '', 'utf8');
 
-    await withActionEnv({
-      INPUT_API_KEY: 'test-key',
-      INPUT_PROJECT_SLUG: 'my-app',
-      INPUT_PROCESS_SLUG: 'smoke-suite',
-      INPUT_API_URL: baseUrl,
-      INPUT_WAIT_FOR_COMPLETION: 'true',
-      INPUT_TIMEOUT_SECONDS: '20',
-      INPUT_INITIAL_POLL_INTERVAL_SECONDS: '1',
-      INPUT_MAX_POLL_INTERVAL_SECONDS: '2',
-      INPUT_HTTP_MAX_ATTEMPTS: '2',
-      GITHUB_OUTPUT: outputFile,
-      GITHUB_STEP_SUMMARY: summaryFile,
-      GITHUB_RUN_ID: '100',
-      GITHUB_RUN_ATTEMPT: '1',
-      GITHUB_JOB: 'test-job'
-    }, async () => {
-      await run();
+    const logs = await captureConsole(async () => {
+      await withActionEnv({
+        INPUT_API_KEY: 'test-key',
+        INPUT_PROJECT_SLUG: 'my-app',
+        INPUT_PROCESS_SLUG: 'smoke-suite',
+        INPUT_API_URL: baseUrl,
+        INPUT_WAIT_FOR_COMPLETION: 'true',
+        INPUT_TIMEOUT_SECONDS: '20',
+        INPUT_INITIAL_POLL_INTERVAL_SECONDS: '1',
+        INPUT_MAX_POLL_INTERVAL_SECONDS: '2',
+        INPUT_HTTP_MAX_ATTEMPTS: '2',
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_STEP_SUMMARY: summaryFile,
+        GITHUB_RUN_ID: '100',
+        GITHUB_RUN_ATTEMPT: '1',
+        GITHUB_JOB: 'test-job'
+      }, async () => {
+        await run();
+      });
     });
 
     const outputs = parseOutputFile(outputFile);
@@ -155,6 +180,13 @@ test('run succeeds and emits outputs for completed successful run', async () => 
     assert.equal(outputs.failed, '0');
     assert.equal(outputs.blocked, '0');
     assert.equal(outputs.idempotency_replayed, 'false');
+
+    const joinedLogs = logs.join('\n');
+    assert.match(joinedLogs, /Run created: run_123/);
+    assert.match(joinedLogs, /Status URL: http:\/\/localhost\/status-not-used/);
+    assert.match(joinedLogs, /Waiting for completion/);
+    assert.match(joinedLogs, /Still running after .*4 pending\./);
+    assert.doesNotMatch(joinedLogs, /poll=1 state=/);
   });
 });
 
