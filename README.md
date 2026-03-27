@@ -2,40 +2,39 @@
 
 Official GitHub Action for Certyn CI verification.
 
-It triggers a Certyn run (`POST /api/ci/runs`), optionally waits for completion (`GET /api/ci/runs/{runId}`), and fails your workflow based on run results.
-
-## Why use this action
-
-- Safe retries with idempotency key defaults
-- Polling that respects `retryAfterSeconds`
-- Clear outputs (`run_id`, `state`, counts, `app_url`)
-- Optional best-effort cancellation on timeout/job cancellation
+Trigger Certyn test runs, send AI instructions, and gate deployments on results.
 
 ## Quick start
 
+### Run smoke tests on every PR
+
 ```yaml
-name: Certyn Smoke Gate
-
-on:
-  pull_request:
-
-jobs:
-  certyn:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Certyn CI run
-        uses: certyn/action@v1
-        with:
-          api_key: ${{ secrets.CERTYN_API_KEY }}
-          project_slug: ${{ secrets.CERTYN_PROJECT_SLUG }}
-          environment_key: staging
-          process_slug: smoke-suite
+- uses: certyn/action@v1
+  with:
+    api_key: ${{ secrets.CERTYN_API_KEY }}
+    project_slug: my-app
+    process_slug: smoke-suite
 ```
+
+### Post-deploy: bump version, run smoke, and explore changes
+
+```yaml
+- uses: certyn/action@v1
+  with:
+    api_key: ${{ secrets.CERTYN_API_KEY }}
+    project_slug: my-app
+    process_slug: smoke-suite
+    environment_key: prod
+    instruction: |
+      Bump prod version to ${{ github.sha }}.
+      Check the checkout page and write test cases for recent changes.
+```
+
+When `instruction` is provided alongside `process_slug`, the action:
+1. Creates the CI run (smoke tests) as usual
+2. Sends the instruction to Certyn AI in the background
+3. Polls test results, then waits for the AI conversation to complete
+4. Outputs both test results and the AI response
 
 ## Inputs
 
@@ -43,30 +42,33 @@ jobs:
 |---|---|---|---|
 | `api_key` | yes | - | Certyn API key |
 | `project_slug` | yes | - | Certyn project slug |
-| `environment_key` | no | - | Optional environment key |
-| `process_slug` | conditional | - | Recommended selector |
-| `tags` | conditional | - | Use only if `process_slug` is not provided |
-| `api_url` | no | `https://api.certyn.io` | Use dev/staging/prod hosts |
-| `repository` | no | `GITHUB_REPOSITORY` | Metadata sent to Certyn |
-| `ref` | no | `GITHUB_REF_NAME` | Metadata sent to Certyn |
-| `commit_sha` | no | `GITHUB_SHA` | Metadata sent to Certyn |
-| `event` | no | `GITHUB_EVENT_NAME` | Metadata sent to Certyn |
-| `external_url` | no | current Actions run URL | Metadata sent to Certyn |
-| `idempotency_key` | no | `GITHUB_RUN_ID-GITHUB_RUN_ATTEMPT-GITHUB_JOB` | Prevents duplicate runs on retries |
-| `wait_for_completion` | no | `true` | If `false`, action exits after create |
+| `environment_key` | no | - | Target environment (e.g., staging, prod) |
+| `instruction` | no | - | Natural language instruction for Certyn AI |
+| `process_slug` | conditional | - | Process to run (recommended) |
+| `tags` | conditional | - | Alternative to `process_slug` |
+| `api_url` | no | `https://api.certyn.io` | API base URL |
+| `repository` | no | `GITHUB_REPOSITORY` | Git metadata |
+| `ref` | no | `GITHUB_REF_NAME` | Git metadata |
+| `commit_sha` | no | `GITHUB_SHA` | Git metadata |
+| `event` | no | `GITHUB_EVENT_NAME` | Git metadata |
+| `external_url` | no | current Actions run URL | Link back to CI |
+| `idempotency_key` | no | auto-generated | Prevents duplicate runs on retries |
+| `wait_for_completion` | no | `true` | Wait for terminal state |
 | `timeout_seconds` | no | `1800` | Max wait time |
 | `initial_poll_interval_seconds` | no | `10` | Min poll interval |
 | `max_poll_interval_seconds` | no | `30` | Max poll interval |
-| `fail_on_failed` | no | `true` | Fail when failed > 0 |
-| `fail_on_blocked` | no | `true` | Fail when blocked > 0 |
-| `fail_on_cancelled` | no | `true` | Fail when state is cancelled |
-| `cancel_on_timeout` | no | `true` | Best-effort cancel when timing out |
-| `cancel_on_job_cancel` | no | `true` | Best-effort cancel on SIGINT/SIGTERM |
-| `cancel_reason` | no | `Cancelled by certyn/action` | Cancel payload reason |
-| `request_timeout_seconds` | no | `30` | Per-request timeout |
-| `http_max_attempts` | no | `4` | Retries for 429/5xx/network |
+| `fail_on_failed` | no | `true` | Fail when tests fail |
+| `fail_on_blocked` | no | `true` | Fail when tests are blocked |
+| `fail_on_cancelled` | no | `true` | Fail when run is cancelled |
+| `cancel_on_timeout` | no | `true` | Cancel run on timeout |
+| `cancel_on_job_cancel` | no | `true` | Cancel run on SIGINT/SIGTERM |
+| `cancel_reason` | no | `Cancelled by certyn/action` | Cancel reason |
+| `request_timeout_seconds` | no | `30` | Per-request HTTP timeout |
+| `http_max_attempts` | no | `4` | Retries for 429/5xx/network errors |
 
-`process_slug` and `tags` are mutually exclusive. You must provide exactly one.
+`process_slug` and `tags` are mutually exclusive. Provide exactly one.
+
+`instruction` is optional and works alongside either mode.
 
 ## Outputs
 
@@ -74,59 +76,104 @@ jobs:
 |---|---|
 | `run_id` | Certyn run ID |
 | `status_url` | Absolute status URL |
-| `app_url` | App URL for artifacts |
-| `test_case_count` | Test case count from create response |
-| `idempotency_replayed` | `true` if create reused existing run |
-| `state` | Final run state |
-| `conclusion` | Final conclusion |
-| `total`, `passed`, `failed`, `blocked`, `pending`, `skipped` | Final counters |
+| `app_url` | App URL for run details |
+| `test_case_count` | Number of tests in the run |
+| `idempotency_replayed` | `true` if reusing an existing run |
+| `state` | Final run state (`completed` or `cancelled`) |
+| `conclusion` | Final outcome (`success`, `failure`, `action_required`, `neutral`, `cancelled`) |
+| `total`, `passed`, `failed`, `blocked`, `pending`, `skipped` | Test counters |
+| `conversation_id` | AI conversation ID (when `instruction` is provided) |
+| `conversation_state` | Conversation state (`idle`, `failed`, `processing`) |
+| `conversation_response` | AI response text |
 
 ## Examples
 
-### Use tags instead of process slug
+### Deployment pipeline with AI instructions
+
+```yaml
+name: Deploy & Verify
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ... your deploy steps ...
+
+      - name: Verify deployment
+        uses: certyn/action@v1
+        with:
+          api_key: ${{ secrets.CERTYN_API_KEY }}
+          project_slug: my-app
+          environment_key: prod
+          process_slug: smoke-suite
+          instruction: |
+            We deployed version ${{ github.sha }} to production.
+            Bump the prod environment version.
+            After smoke tests pass, explore the checkout and payment pages.
+            Record any observations and propose new test cases.
+```
+
+### Tags instead of process slug
 
 ```yaml
 - uses: certyn/action@v1
   with:
     api_key: ${{ secrets.CERTYN_API_KEY }}
-    project_slug: ${{ secrets.CERTYN_PROJECT_SLUG }}
+    project_slug: my-app
     tags: smoke,critical
 ```
 
-### Trigger only (no waiting)
+### Fire and forget (no waiting)
 
 ```yaml
 - uses: certyn/action@v1
   id: certyn
   with:
     api_key: ${{ secrets.CERTYN_API_KEY }}
-    project_slug: ${{ secrets.CERTYN_PROJECT_SLUG }}
+    project_slug: my-app
     process_slug: smoke-suite
     wait_for_completion: false
 
-- run: echo "Run URL: ${{ steps.certyn.outputs.status_url }}"
+- run: echo "Run URL ${{ steps.certyn.outputs.status_url }}"
 ```
 
-### Non-production host (dev/staging)
+### Use AI response in subsequent steps
 
 ```yaml
 - uses: certyn/action@v1
+  id: certyn
   with:
-    api_key: ${{ secrets.CERTYN_API_KEY_DEV }}
-    project_slug: ${{ secrets.CERTYN_PROJECT_SLUG_DEV }}
-    api_url: https://api.dev.certyn.io
+    api_key: ${{ secrets.CERTYN_API_KEY }}
+    project_slug: my-app
     process_slug: smoke-suite
+    instruction: "Summarize test health and top risks for this release."
+
+- name: Post AI summary to PR
+  if: github.event_name == 'pull_request'
+  uses: actions/github-script@v7
+  with:
+    script: |
+      github.rest.issues.createComment({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: context.issue.number,
+        body: `## Certyn AI Summary\n\n${{ steps.certyn.outputs.conversation_response }}`
+      })
 ```
 
-## Testing this action
+## Testing
 
-- Unit/integration tests: `npm test`
-- Live smoke test workflow: `.github/workflows/live-smoke.yml`
-
-The live smoke workflow supports dev/staging/prod targets and optional custom URL/slug overrides.
+- Unit tests: `npm test`
+- Live smoke: `.github/workflows/live-smoke.yml`
 
 ## Recommended rollout
 
-1. Start with `wait_for_completion: false` in a non-blocking workflow to validate connectivity.
-2. Enable waiting and strict gating (`fail_on_failed=true`, `fail_on_blocked=true`).
-3. Add nightly `regression-suite` workflow separately from PR smoke gating.
+1. Start with `wait_for_completion: false` to validate connectivity.
+2. Enable waiting with `fail_on_failed: true` for PR gating.
+3. Add `instruction` to deployment workflows for AI-driven post-deploy verification.

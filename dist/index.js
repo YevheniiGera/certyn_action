@@ -459,6 +459,7 @@ function readConfig() {
     apiKey: getStringInput('api_key', { required: true }),
     projectSlug: getStringInput('project_slug', { required: true }),
     environmentKey: getStringInput('environment_key', { defaultValue: '' }),
+    instruction: getStringInput('instruction', { defaultValue: '' }),
     processSlug: getStringInput('process_slug', { defaultValue: '' }),
     tags: parseTagsInput(getStringInput('tags', { defaultValue: '' })),
     apiUrl: normalizeApiUrl(getStringInput('api_url', { defaultValue: 'https://api.certyn.io' })),
@@ -530,6 +531,10 @@ function buildCreatePayload(config) {
     payload.externalUrl = config.externalUrl;
   }
 
+  if (config.instruction) {
+    payload.instruction = config.instruction;
+  }
+
   return payload;
 }
 
@@ -545,6 +550,76 @@ function buildHeaders(config) {
   }
 
   return headers;
+}
+
+async function pollConversation(config, conversationId) {
+  const headers = { 'X-API-Key': config.apiKey, 'User-Agent': 'certyn/action@v1' };
+  const deadline = Date.now() + 120000; // 2 min max for conversation
+  let pollNumber = 0;
+
+  logInfo(`Waiting for AI conversation ${conversationId} to complete...`);
+
+  while (Date.now() < deadline) {
+    pollNumber += 1;
+    await sleep(5000);
+
+    const resp = await requestJson(
+      `${config.apiUrl}/api/assistant/conversations/${encodeURIComponent(conversationId)}`, {
+        method: 'GET',
+        headers,
+        maxAttempts: config.httpMaxAttempts,
+        requestTimeoutMs: config.requestTimeoutMs,
+        retryLabel: 'get conversation'
+      });
+
+    if (!resp.ok) {
+      logWarn(`Failed to poll conversation (${resp.status}). Skipping.`);
+      return;
+    }
+
+    const conversation = resp.json || {};
+    const state = conversation.status || 'processing';
+
+    if (state === 'idle' || state === 'failed') {
+      const messages = conversation.messages || [];
+      const assistantMsgs = messages.filter(m => m.role === 'assistant');
+      const response = assistantMsgs.length > 0
+        ? assistantMsgs[assistantMsgs.length - 1].content
+        : '';
+
+      setOutput('conversation_state', state);
+      setOutput('conversation_response', response);
+
+      if (state === 'failed') {
+        logWarn(`Conversation failed: ${response.substring(0, 200)}`);
+      } else {
+        logInfo(`Conversation completed.`);
+        if (response) {
+          logInfo(`AI response: ${response.substring(0, 300)}${response.length > 300 ? '...' : ''}`);
+        }
+      }
+
+      appendSummary([
+        '',
+        '### AI Conversation',
+        '',
+        `**Instruction:** ${config.instruction.substring(0, 300)}`,
+        '',
+        `**Response:** ${response.substring(0, 500)}${response.length > 500 ? '...' : ''}`,
+        '',
+        `**Status:** ${state}`
+      ]);
+
+      return;
+    }
+
+    if (pollNumber === 1 || pollNumber % 4 === 0) {
+      logInfo(`AI still processing...`);
+    }
+  }
+
+  setOutput('conversation_state', 'processing');
+  logWarn(`Conversation ${conversationId} still processing after 2 minutes. Continuing without waiting.`);
 }
 
 async function run() {
@@ -584,10 +659,20 @@ async function run() {
   setOutput('test_case_count', parseCounter(createResponse.json && createResponse.json.testCaseCount));
   setOutput('idempotency_replayed', replayed ? 'true' : 'false');
 
+  const conversationId = createResponse.json && createResponse.json.conversationId
+    ? String(createResponse.json.conversationId)
+    : '';
+  if (conversationId) {
+    setOutput('conversation_id', conversationId);
+  }
+
   logInfo(`Run created: ${runId}${replayed ? ' (idempotent replay)' : ''}.`);
   logInfo(`Status URL: ${statusUrl}`);
   if (createResponse.json && createResponse.json.appUrl) {
     logInfo(`App URL: ${createResponse.json.appUrl}`);
+  }
+  if (conversationId) {
+    logInfo(`Conversation: ${conversationId} (AI processing instruction in background).`);
   }
 
   const signalContext = {
@@ -697,6 +782,12 @@ async function run() {
       }
 
       logInfo(`Run ${runId} completed successfully.`);
+
+      // If there's a linked conversation, poll until AI finishes
+      if (conversationId) {
+        await pollConversation(config, conversationId);
+      }
+
       return;
     }
 

@@ -16,6 +16,9 @@ inputs:
   environment_key:
     description: Optional environment key (for example staging)
     required: false
+  instruction:
+    description: Optional natural language instruction for Certyn AI (e.g., "Bump prod to 2.3.1. Run smoke. Check checkout page."). Sent alongside the CI run — the AI processes it in the background.
+    required: false
   process_slug:
     description: Process slug to run (recommended)
     required: false
@@ -120,6 +123,12 @@ outputs:
     description: Pending count
   skipped:
     description: Skipped count
+  conversation_id:
+    description: Certyn conversation ID (when instruction is provided)
+  conversation_state:
+    description: Conversation state (processing, idle, failed)
+  conversation_response:
+    description: AI assistant response text
 
 runs:
   using: node20
